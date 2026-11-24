@@ -2,7 +2,7 @@
 
 Server-rendered Rust web apps with [htmx](https://htmx.org) and [axum](https://github.com/tokio-rs/axum), built on how the web already works: every URL names a resource, the server answers with HTML, and links and forms are the only way to move.
 
-**Status: early. Views nest to any depth and are served as whole documents, and a view's fields are parsed from its URL and printed back as one; the rest of the design is written down, not built.**
+**Status: early. Views nest to any depth, a view's fields are parsed from its URL and printed back as one, and a request from htmx is answered with only what goes inside the outlet it names; the rest of the design is written down, not built.**
 
 ```rust
 use axum::Router;
@@ -26,7 +26,11 @@ impl View for Document {
         html! {
             (DOCTYPE)
             title { (outlet.title) }
-            main id=(outlet.id) { (outlet.content) }
+            // Set once, for every link below: htmx sends it and names this
+            // view's outlet, and the answer is only what goes inside it.
+            body hx-boost:inherited="true" hx-target:inherited={ "#" (outlet.id) } {
+                main id=(outlet.id) { (outlet.content) }
+            }
         }
     }
 }
@@ -71,9 +75,14 @@ impl View for Catalog {
     /// A view renders at the path it is shown at, and reads its fields from it.
     async fn render(at: &ViewPath<Self>, _: &App, outlet: Outlet) -> impl Into<Html> {
         html! {
+            // When the answer is not the whole document, the view no other is
+            // around says the title, and htmx makes it the document's.
+            @if outlet.outermost { title { (outlet.title) } }
             h1 { "Catalog " (at.catalog_id) }
             // The path of a view nested in this one: `/catalogs/7/items/3?q=tea`.
-            a href=(at.to(Item { item_id: 3 })) { "Its third item" }
+            // The link is aimed at this view's outlet, so a click on it gets
+            // the item alone, and this view does not render again.
+            a href=(at.to(Item { item_id: 3 })) hx-target={ "#" (outlet.id) } { "Its third item" }
             section id=(outlet.id) { (outlet.content) }
         }
     }
@@ -126,9 +135,26 @@ A URL is never written by hand. It is a `ViewPath`: a view value and, above it, 
 - `Item { item_id: 3 }.path()`: its parent, `Catalog`, needs a value. Only a view whose ancestors all derive `Default` starts a path.
 - `Catalogs.path().to(Item { item_id: 3 })`: `Item` is not nested in `Catalogs`.
 
-What stops the app when a view is registered: a parameter in a view's `PATH` with no field of that view, and a field named as one of an ancestor's. Every view on the way down is read from the same URL, so a name is used once on the way: `catalog_id` and `item_id`, not `id` twice.
+What stops the app when a view is registered: a parameter in a view's `PATH` with no field of that view, a field named as one of an ancestor's, and an outlet with the id of an ancestor's. Every view on the way down is read from the same URL, so a name is used once on the way: `catalog_id` and `item_id`, not `id` twice.
 
 A view can have no part of the path of its own, to draw something around the views nested in it, such as their tabs. It is at its parent's path, so one of the two is registered: the one that address shows.
+
+## One URL, the whole document or a part of it
+
+A URL always shows the same view. How much of the document the server sends for it depends on who asks:
+
+| The request | The answer |
+|---|---|
+| A load, a refresh, a shared link, a browser without JavaScript | The whole document |
+| htmx, for a link or form aimed at the outlet of a view the requested one is nested in (`HX-Target`) | What goes inside that outlet. The views around it do not render |
+| htmx, aimed at anything else | The whole document |
+| htmx, restoring history on back and forward | The whole document |
+
+The root view sets htmx's `hx-boost` and `hx-target` once, so every plain link is answered with what goes inside the root view's outlet. A view that draws its own navigation aims it at a narrower outlet: its own (`outlet.id`), or the one it is shown in (`at.parent().outlet()`), and what is around that outlet stays in the browser as it is. No view reads a request header.
+
+The views that do not render are still read from the URL, so `at.parent()` holds in every answer. The view that has no other around it in an answer is told so (`outlet.outermost`): it is the one to say the title, the root view in the document's head and any other in a `<title>` that htmx takes out of the answer.
+
+Every answer carries `Vary: HX-Request, HX-Target, HX-History-Restore-Request`, the request headers it depends on. An outlet's id is how a request names it, so it is made of letters, digits, `-` and `_`, and two outlets on the way to one view cannot share an id: the app does not start.
 
 ## REST, as it was meant
 
@@ -177,7 +203,6 @@ pnpm test
 
 ## Planned
 
-- The server sending only the outlet a request names
 - Forms
 - Regions: parts of a page refreshed on their own
 - File-system routing

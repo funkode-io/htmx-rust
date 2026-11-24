@@ -13,7 +13,7 @@ Where a view is shown (the type `ViewPath`): a view value and, above it, the pat
 _Avoid_: Route, link builder, URL for the value. "Path" for a view's own part of it alone (its "part of the path")
 
 **Outlet**:
-The one place in a view where the view nested inside it is shown. The URL decides what fills it, not the code that uses the view, which is what sets it apart from a slot.
+The one place in a view where the view nested inside it is shown. The URL decides what fills it, not the code that uses the view, which is what sets it apart from a slot. An outlet has an id, by which a request from htmx names it: the answer is then cut to what goes inside that outlet, and the views around it do not render.
 _Avoid_: Slot, frame, placeholder
 
 **Action**:
