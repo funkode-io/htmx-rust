@@ -110,3 +110,49 @@ test('links between nested views change the address and what is shown inside the
   await expect(page.getByRole('heading', { level: 2 })).toHaveText('Tags');
   await expect(page.getByRole('heading', { level: 3 })).toHaveCount(0);
 });
+
+test('a tab click keeps the catalog around the tabs as it was, and the address bar shows the tab', async ({
+  page,
+  javaScriptEnabled,
+}) => {
+  await page.goto('/catalogs/1');
+  const header = page.locator('#outlet-0').getByRole('heading', { level: 1 });
+  await expect(header).toHaveText('Spring teas');
+  // A property of the node, which no answer can carry: only the node itself keeps it.
+  await header.evaluate((node) => Object.assign(node, { kept: true }));
+
+  await page.getByRole('link', { name: 'Tags' }).click();
+  await expectTags(page);
+
+  // With htmx the header is the same DOM node; without it, one of a new document.
+  expect(await header.evaluate((node) => 'kept' in node)).toBe(javaScriptEnabled);
+});
+
+test('back and forward across tab clicks show the tab each address names', async ({ page }) => {
+  const summer = catalog(page, 'Summer teas');
+  /** The tags of "Summer teas", or with `open` false the catalog with no tab open. */
+  const expectTab = async (path: string, title: string, open: boolean) => {
+    await expect(page).toHaveURL(path);
+    await expect(page).toHaveTitle(title);
+    await summer.expectShown();
+    await expect(page.getByRole('navigation')).toHaveCount(2);
+    await expect(page.getByRole('heading', { level: 2 })).toHaveText(open ? ['Tags'] : []);
+    await expect(page.locator('#outlet-1 > nav [aria-current]')).toHaveText(open ? ['Tags'] : []);
+  };
+  await page.goto('/catalogs/2');
+  await expectTab('/catalogs/2', 'Catalog', false);
+  await page.getByRole('link', { name: 'Items' }).click();
+  await expectItems(page, '/catalogs/2/items', 'Items');
+  await page.getByRole('link', { name: 'Tags' }).click();
+  await expectTab('/catalogs/2/tags', 'Tags', true);
+
+  await page.goBack();
+  await expectItems(page, '/catalogs/2/items', 'Items');
+  await page.goBack();
+  await expectTab('/catalogs/2', 'Catalog', false);
+
+  await page.goForward();
+  await expectItems(page, '/catalogs/2/items', 'Items');
+  await page.goForward();
+  await expectTab('/catalogs/2/tags', 'Tags', true);
+});
