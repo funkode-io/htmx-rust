@@ -189,6 +189,18 @@ impl<V: View> Deref for ViewPath<V> {
 /// own view's fields, then every view's other fields as the one query string.
 impl<V: View> Display for ViewPath<V> {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        let (path, query) = self.print();
+        formatter.write_str(&path)?;
+        match query {
+            query if query.is_empty() => Ok(()),
+            query => write!(formatter, "?{query}"),
+        }
+    }
+}
+
+impl<V: View> ViewPath<V> {
+    /// The path and the query string this path prints as.
+    fn print(&self) -> (String, String) {
         let mut path = V::route();
         let mut query = Serializer::new(String::new());
         V::print(self, &mut path, &mut query);
@@ -197,11 +209,7 @@ impl<V: View> Display for ViewPath<V> {
             "{} has no field for a parameter of its path: {path}",
             std::any::type_name::<V>()
         );
-        formatter.write_str(&path)?;
-        match query.finish() {
-            query if query.is_empty() => Ok(()),
-            query => write!(formatter, "?{query}"),
-        }
+        (path, query.finish())
     }
 }
 
@@ -266,12 +274,14 @@ mod chain {
         fn outlets() -> Vec<String>;
 
         /// Renders this view around `content`, and its ancestors around it:
-        /// as many `views` as the answer holds, this one counted.
+        /// as many `views` as the answer holds, this one counted. `shown` is
+        /// the path of the view the content is of.
         fn show(
             at: &Self::ViewPath,
             state: &S,
             content: Html,
             title: &'static str,
+            shown: Option<String>,
             views: usize,
         ) -> impl Future<Output = Html> + Send;
     }
@@ -296,7 +306,14 @@ mod chain {
             Vec::new()
         }
 
-        async fn show(_: &NoParent, _: &S, content: Html, _: &'static str, _: usize) -> Html {
+        async fn show(
+            _: &NoParent,
+            _: &S,
+            content: Html,
+            _: &'static str,
+            _: Option<String>,
+            _: usize,
+        ) -> Html {
             content
         }
     }
@@ -339,18 +356,23 @@ mod chain {
             state: &V::State,
             content: Html,
             title: &'static str,
+            shown: Option<String>,
             views: usize,
         ) -> Html {
             let outlet = Outlet {
                 id: outlet::<V>(),
                 content,
                 title,
+                shown,
                 outermost: views == 1,
             };
             let content = V::render(at, state, outlet).await.into();
             match views {
                 1 => content,
-                _ => V::Parent::show(&at.0.1, state, content, title, views - 1).await,
+                _ => {
+                    let shown = Some(at.print().0);
+                    V::Parent::show(&at.0.1, state, content, title, shown, views - 1).await
+                }
             }
         }
     }
@@ -372,6 +394,32 @@ pub struct Outlet {
     /// `<title>` of its own, which htmx takes out of the answer and makes the
     /// document's.
     pub outermost: bool,
+    /// The path of the nested view, without its query string.
+    shown: Option<String>,
+}
+
+impl Outlet {
+    /// An outlet as the library hands one to a view that has no other around
+    /// it ([`outermost`](Outlet::outermost)), with nothing nested known to be
+    /// [shown](Outlet::shows) in it.
+    pub fn new(id: impl Into<String>, content: Html, title: &'static str) -> Self {
+        Self {
+            id: id.into(),
+            content,
+            title,
+            shown: None,
+            outermost: true,
+        }
+    }
+
+    /// Whether the view at `path` is the one shown in this outlet, as the URL
+    /// says: the view nested here, whatever is nested further in it. A view
+    /// marks with it the link to what is open, such as a tab.
+    ///
+    /// The query string plays no part: a search in the open view is still it.
+    pub fn shows<V: View>(&self, path: &ViewPath<V>) -> bool {
+        self.shown.as_deref() == Some(&path.print().0)
+    }
 }
 
 /// What an answer depends on besides the URL, which every answer says, so that
@@ -452,7 +500,8 @@ impl<S: Clone + Send + Sync + 'static> Views<S> for Router<S> {
                         let views = named(&headers)
                             .and_then(|id| ancestors.iter().position(|outlet| outlet == id))
                             .map_or(V::DEPTH, |above| V::DEPTH - 1 - above);
-                        let html = V::show(&at, &state, Html::default(), V::TITLE, views).await;
+                        let html =
+                            V::show(&at, &state, Html::default(), V::TITLE, None, views).await;
                         Ok::<_, (StatusCode, String)>(axum::response::Html(String::from(html)))
                     };
                     ([(VARY, VARY_BY)], answer.await)

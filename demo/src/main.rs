@@ -104,7 +104,7 @@ impl View for Document {
                 head {
                     meta charset="utf-8";
                     title { (outlet.title) }
-                    // The one style of the demo: the tab that is open.
+                    // The one style of the demo: the link to what is open.
                     style { "[aria-current] { font-weight: bold; text-decoration: none }" }
                     script src="/htmx.js" defer {}
                 }
@@ -268,15 +268,14 @@ impl View for Tabs {
     const TITLE: &'static str = "Catalog";
 
     async fn render(at: &ViewPath<Self>, _: &App, outlet: Outlet) -> impl Into<Html> {
-        // Which tab is open is told from the title of the view the URL names,
-        // until the library says which view is in an outlet.
-        let open = |titles: &[&str]| titles.contains(&outlet.title).then_some("page");
+        // The tab that is open is the one whose path is the view in the outlet.
+        let (items, tags) = (at.to(Items), at.to(Tags));
         html! {
             (title(&outlet))
             nav hx-target:inherited={ "#" (at.parent().outlet()) } {
-                a href=(at.to(Items)) aria-current=[open(&[Items::TITLE, Item::TITLE])] { "Items" }
+                a href=(items) aria-current=[outlet.shows(&items).then_some("page")] { "Items" }
                 " "
-                a href=(at.to(Tags)) aria-current=[open(&[Tags::TITLE])] { "Tags" }
+                a href=(tags) aria-current=[outlet.shows(&tags).then_some("page")] { "Tags" }
             }
             section id=(outlet.id) { (outlet.content) }
         }
@@ -327,7 +326,12 @@ impl View for Items {
             h2 { "Items" }
             ul {
                 @for &item in catalog.into_iter().flat_map(|catalog| &catalog.items) {
-                    li { a href=(at.to(Item { item: item.into() })) { (item) } }
+                    @let item = at.to(Item { item: item.into() });
+                    li {
+                        a href=(item) aria-current=[outlet.shows(&item).then_some("page")] {
+                            (item.item)
+                        }
+                    }
                 }
             }
             div id=(outlet.id) { (outlet.content) }
@@ -384,18 +388,17 @@ async fn start_catalog(State(app): State<App>) -> impl IntoResponse {
         });
         (Catalog { catalog_id: id }.path().to(Tabs), name)
     };
-    let outlet = Outlet {
-        id: "outlet-0".into(),
-        content: html! {
+    let outlet = Outlet::new(
+        "outlet-0",
+        html! {
             h1 { "Catalog created" }
             p { strong { (name) } " is among the catalogs now." }
             p { a href=(catalog) { "View " (name) } }
             p { a href=(Catalogs::default().path()) { "See the catalogs" } }
         }
         .into(),
-        title: "Catalog created",
-        outermost: true,
-    };
+        "Catalog created",
+    );
     let document: Html = Document::render(&Document.path(), &app, outlet)
         .await
         .into();

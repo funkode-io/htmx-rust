@@ -938,7 +938,13 @@ impl View for Shelf {
     const PATH: &'static str = "/shelves/{shelf}";
 
     async fn render(at: &ViewPath<Self>, _: &App, outlet: Outlet) -> impl Into<Html> {
-        Html::trusted(format!("Shelf {:?}[{}]", at.shelf, outlet.content.as_str()))
+        Html::trusted(format!(
+            "Shelf {:?} books={} papers={}[{}]",
+            at.shelf,
+            outlet.shows(&at.to(Books)),
+            outlet.shows(&at.to(Papers { page: 1 })),
+            outlet.content.as_str()
+        ))
     }
 }
 
@@ -955,14 +961,55 @@ impl View for Books {
     }
 }
 
+/// A second view nested in [`Shelf`], with a field in the query string.
+#[derive(Serialize, Deserialize)]
+struct Papers {
+    page: u32,
+}
+
+impl View for Papers {
+    type State = App;
+    type Parent = Shelf;
+    const PATH: &'static str = "/papers";
+
+    async fn render(_: &ViewPath<Self>, _: &App, _: Outlet) -> impl Into<Html> {
+        Html::trusted("Papers")
+    }
+}
+
+fn shelves() -> Router {
+    Router::new()
+        .view::<Shelf>()
+        .view::<Books>()
+        .view::<Papers>()
+        .with_state(App { name: "Loom" })
+}
+
+#[tokio::test]
+async fn an_outlet_says_which_nested_view_is_shown_in_it() {
+    let shown = |path: &'static str| async move { body(get_path(shelves(), path).await).await };
+
+    assert!(
+        shown("/shelves/top")
+            .await
+            .contains("books=false papers=false[]")
+    );
+    assert!(
+        shown("/shelves/top/books")
+            .await
+            .contains("books=true papers=false[Books]")
+    );
+    // The view is the same one whatever its query string says.
+    assert!(
+        shown("/shelves/top/papers?page=7")
+            .await
+            .contains("books=false papers=true[Papers]")
+    );
+}
+
 #[tokio::test]
 async fn a_path_whose_parameter_is_empty_is_answered_with_the_view_it_names() {
-    let router = || {
-        Router::new()
-            .view::<Shelf>()
-            .view::<Books>()
-            .with_state(App { name: "Loom" })
-    };
+    let router = shelves;
     let books = |shelf: &str| {
         Shelf {
             shelf: shelf.into(),
@@ -973,13 +1020,21 @@ async fn a_path_whose_parameter_is_empty_is_answered_with_the_view_it_names() {
     };
 
     let named = get_path(router(), &books("top")).await;
-    assert!(body(named).await.contains("Shelf \"top\"[Books]"));
+    assert!(
+        body(named)
+            .await
+            .contains("Shelf \"top\" books=true papers=false[Books]")
+    );
 
     // The route with an empty parameter, not `/shelves/books`, which is the
     // shelf named "books".
     assert_eq!(books(""), "/shelves//books");
     let empty = get_path(router(), &books("")).await;
-    assert!(body(empty).await.contains("Shelf \"\"[Books]"));
+    assert!(
+        body(empty)
+            .await
+            .contains("Shelf \"\" books=true papers=false[Books]")
+    );
 }
 
 /// A view that hides the names of its fields from the startup checks.
@@ -1055,6 +1110,7 @@ impl View for Middle {
     }
 }
 
+/// It says whether the view nested in it is the one its outlet shows.
 #[derive(Serialize, Deserialize)]
 struct Inner;
 
@@ -1064,8 +1120,9 @@ impl View for Inner {
     const PATH: &'static str = "/inner";
     const TITLE: &'static str = "An inner";
 
-    async fn render(_: &ViewPath<Self>, ran: &Ran, outlet: Outlet) -> impl Into<Html> {
-        draw(ran, "Inner", "Inner".into(), outlet)
+    async fn render(at: &ViewPath<Self>, ran: &Ran, outlet: Outlet) -> impl Into<Html> {
+        let open = outlet.shows(&at.to(Leaf));
+        draw(ran, "Inner", format!("Inner, leaf open: {open}"), outlet)
     }
 }
 
@@ -1129,7 +1186,7 @@ async fn assert_whole_document(headers: &[(&str, &str)]) {
         body(response).await,
         format!(
             "<title>A leaf</title><div id=\"outlet-0\">Outer[<div id=\"middle\">Middle 7[\
-             <div id=\"outlet-2\">Inner[{LEAF}]</div>]</div>]</div>"
+             <div id=\"outlet-2\">Inner, leaf open: true[{LEAF}]</div>]</div>]</div>"
         ),
         "{headers:?}"
     );
@@ -1155,7 +1212,7 @@ async fn a_request_naming_the_root_views_outlet_gets_what_is_inside_it_and_the_r
         body(response).await,
         format!(
             "<title>A leaf</title><div id=\"middle\">Middle 7[\
-             <div id=\"outlet-2\">Inner[{LEAF}]</div>]</div>"
+             <div id=\"outlet-2\">Inner, leaf open: true[{LEAF}]</div>]</div>"
         )
     );
     assert_eq!(ran, ["Leaf", "Inner", "Middle"]);
@@ -1171,8 +1228,9 @@ async fn a_request_naming_a_nested_views_outlet_gets_only_what_is_inside_it_and_
 
     assert_eq!(
         body(inner).await,
-        format!("<title>A leaf</title><div id=\"outlet-2\">Inner[{LEAF}]</div>")
+        format!("<title>A leaf</title><div id=\"outlet-2\">Inner, leaf open: true[{LEAF}]</div>")
     );
+    // The first view of the answer is told what its outlet shows as any other.
     assert_eq!(ran_inner, ["Leaf", "Inner"]);
     // The views around the one sent did not run, and it still shows the value
     // of the one two above it: they are read from the URL all the same.

@@ -48,6 +48,8 @@ async function expectItems(page: Page, path: string, title: string, item?: strin
   const shown = items.locator('ul + div').getByRole('heading', { level: 3 });
   if (item) await expect(shown).toHaveText(item);
   else await expect(shown).toHaveCount(0);
+  // Of the items listed, the one that is open is marked, and only it.
+  await expect(items.locator('li [aria-current]')).toHaveText(item ? [item] : []);
   await expectOpenTab(page, 'Items');
 }
 
