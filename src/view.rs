@@ -8,7 +8,7 @@ use std::{
 use axum::{
     Router,
     extract::{RawPathParams, RawQuery, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode, header::VARY},
     routing::get,
 };
 use form_urlencoded::Serializer;
@@ -53,6 +53,9 @@ pub trait View: Serialize + DeserializeOwned + Send + Sync + 'static {
     /// The id of this view's outlet. By default it follows the view's depth:
     /// `outlet-0` for the root view, `outlet-1` for a view nested in it, and
     /// so on.
+    ///
+    /// It is how a request names the outlet, so it is made of letters, digits,
+    /// `-` and `_`, and no view this one is nested in has the same.
     const OUTLET: Option<&'static str> = None;
 
     /// The title of this view, which every view around it receives when it is
@@ -144,6 +147,18 @@ impl<V: View> ViewPath<V> {
     {
         &self.0.1
     }
+
+    /// The id of this view's outlet, which the view itself receives as
+    /// [`Outlet::id`]. A view nested in it aims a link at the outlet it is
+    /// shown in with the id of its parent's: `at.parent().outlet()`.
+    pub fn outlet(&self) -> String {
+        outlet::<V>()
+    }
+}
+
+/// The id of a view's outlet: the one it names, or one that follows its depth.
+fn outlet<V: View>() -> String {
+    V::OUTLET.map_or_else(|| format!("outlet-{}", V::Parent::DEPTH), Into::into)
 }
 
 /// A path is shared, not copied: views need not be `Clone`.
@@ -254,14 +269,20 @@ mod chain {
         /// Fills this view's parameters in the route, and its ancestors' before.
         fn print(at: &Self::ViewPath, path: &mut String, query: &mut Serializer<'_, String>);
 
-        /// Renders this view around `content`, and its ancestors around it.
-        /// `shown` is the path of the view the content is of.
+        /// The ids of the outlets on the way, from the root view's down to
+        /// this view's.
+        fn outlets() -> Vec<String>;
+
+        /// Renders this view around `content`, and its ancestors around it:
+        /// as many `views` as the answer holds, this one counted. `shown` is
+        /// the path of the view the content is of.
         fn show(
             at: &Self::ViewPath,
             state: &S,
             content: Html,
             title: &'static str,
             shown: Option<String>,
+            views: usize,
         ) -> impl Future<Output = Html> + Send;
     }
 
@@ -281,12 +302,17 @@ mod chain {
 
         fn print(_: &NoParent, _: &mut String, _: &mut Serializer<'_, String>) {}
 
+        fn outlets() -> Vec<String> {
+            Vec::new()
+        }
+
         async fn show(
             _: &NoParent,
             _: &S,
             content: Html,
             _: &'static str,
             _: Option<String>,
+            _: usize,
         ) -> Html {
             content
         }
@@ -319,21 +345,35 @@ mod chain {
             url::print(&at.0.0, path, query);
         }
 
+        fn outlets() -> Vec<String> {
+            let mut outlets = V::Parent::outlets();
+            outlets.push(outlet::<V>());
+            outlets
+        }
+
         async fn show(
             at: &ViewPath<V>,
             state: &V::State,
             content: Html,
             title: &'static str,
             shown: Option<String>,
+            views: usize,
         ) -> Html {
             let outlet = Outlet {
-                id: V::OUTLET.map_or_else(|| format!("outlet-{}", V::Parent::DEPTH), Into::into),
+                id: outlet::<V>(),
                 content,
                 title,
                 shown,
+                outermost: views == 1,
             };
             let content = V::render(at, state, outlet).await.into();
-            V::Parent::show(&at.0.1, state, content, title, Some(at.print().0)).await
+            match views {
+                1 => content,
+                _ => {
+                    let shown = Some(at.print().0);
+                    V::Parent::show(&at.0.1, state, content, title, shown, views - 1).await
+                }
+            }
         }
     }
 }
@@ -347,19 +387,28 @@ pub struct Outlet {
     pub content: Html,
     /// The title of the view the URL names: the innermost one.
     pub title: &'static str,
+    /// Whether no view is around this one in the answer: it is the root view
+    /// of a whole document, or the first view inside the outlet a request
+    /// named. That view is the one to say the [`title`](Outlet::title), since
+    /// no other will: the root view in the document's head, any other in a
+    /// `<title>` of its own, which htmx takes out of the answer and makes the
+    /// document's.
+    pub outermost: bool,
     /// The path of the nested view, without its query string.
     shown: Option<String>,
 }
 
 impl Outlet {
-    /// An outlet as the library hands one to a view, with nothing nested known
-    /// to be [shown](Outlet::shows) in it.
+    /// An outlet as the library hands one to a view that has no other around
+    /// it ([`outermost`](Outlet::outermost)), with nothing nested known to be
+    /// [shown](Outlet::shows) in it.
     pub fn new(id: impl Into<String>, content: Html, title: &'static str) -> Self {
         Self {
             id: id.into(),
             content,
             title,
             shown: None,
+            outermost: true,
         }
     }
 
@@ -373,35 +422,89 @@ impl Outlet {
     }
 }
 
+/// What an answer depends on besides the URL, which every answer says, so that
+/// a cache never gives a part of a document where the whole was asked for.
+const VARY_BY: &str = "HX-Request, HX-Target, HX-History-Restore-Request";
+
+/// The id of the outlet an htmx request names: `HX-Target` is the element the
+/// answer will go in, as `tag#id`. A request that restores history names none,
+/// whatever it carries: what it restores is the whole document.
+fn named(headers: &HeaderMap) -> Option<&str> {
+    if !headers.contains_key("HX-Request") || headers.contains_key("HX-History-Restore-Request") {
+        return None;
+    }
+    Some(headers.get("HX-Target")?.to_str().ok()?.split_once('#')?.1)
+}
+
 /// Registers views on an [`axum::Router`], beside its ordinary routes.
 pub trait Views<S> {
-    /// Answers GET requests to the view's path with the whole document: the
-    /// view in its parent's outlet, and so on up to the root view.
+    /// Answers GET requests to the view's path.
     ///
-    /// The view and its ancestors are read from the request's URL first. If
-    /// one of them cannot be, because a parameter or the query string does not
-    /// parse into its fields, the answer is `400 Bad Request` and no view
-    /// renders.
+    /// The answer is the whole document: the view in its parent's outlet, and
+    /// so on up to the root view. Unless htmx sent the request and names, as
+    /// the element the answer goes in (`HX-Target`), the outlet of a view this
+    /// one is nested in: then the answer is cut to what goes inside that
+    /// outlet, and the views around it do not render. A request that names
+    /// any other element, or that restores history (back and forward), is
+    /// answered with the whole document.
+    ///
+    /// Every answer says which request headers it depends on (`Vary`).
+    ///
+    /// The view and its ancestors are read from the request's URL first,
+    /// those that will not render too. If one of them cannot be, because a
+    /// parameter or the query string does not parse into its fields, the
+    /// answer is `400 Bad Request` and no view renders.
     ///
     /// # Panics
     ///
     /// If the path already answers GET requests, or the view or one of its
     /// ancestors has a parameter in its part of the path that none of its
-    /// fields fills, or a field named as one of an ancestor's.
+    /// fields fills, a field named as one of an ancestor's, or an outlet whose
+    /// id is an ancestor's or is not made of letters, digits, `-` and `_`.
     fn view<V: View<State = S>>(self) -> Self;
 }
 
 impl<S: Clone + Send + Sync + 'static> Views<S> for Router<S> {
     fn view<V: View<State = S>>(self) -> Self {
         V::check(&mut Vec::new());
+        let view = std::any::type_name::<V>();
+        let outlets = V::outlets();
+        for (depth, id) in outlets.iter().enumerate() {
+            assert!(
+                !id.is_empty()
+                    && id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte)),
+                "{view} is shown through an outlet with the id {id:?}: an id is made of letters, \
+                 digits, - and _"
+            );
+            assert!(
+                !outlets[..depth].contains(id),
+                "{view} is shown through two outlets with the id {id}: a request that names it \
+                 would name both"
+            );
+        }
         self.route(
             &V::route(),
             get(
-                |State(state): State<S>, parameters: RawPathParams, RawQuery(query): RawQuery| async move {
-                    let at = V::parse(&url::fields(&parameters, query.as_deref()))
-                        .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
-                    let document = V::show(&at, &state, Html::default(), V::TITLE, None).await;
-                    Ok::<_, (StatusCode, String)>(axum::response::Html(String::from(document)))
+                |State(state): State<S>,
+                 parameters: RawPathParams,
+                 RawQuery(query): RawQuery,
+                 headers: HeaderMap| async move {
+                    let answer = async {
+                        let at = V::parse(&url::fields(&parameters, query.as_deref()))
+                            .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+                        // The views inside the outlet the request names, when
+                        // it is an ancestor's; if not, all of them.
+                        let ancestors = V::Parent::outlets();
+                        let views = named(&headers)
+                            .and_then(|id| ancestors.iter().position(|outlet| outlet == id))
+                            .map_or(V::DEPTH, |above| V::DEPTH - 1 - above);
+                        let html =
+                            V::show(&at, &state, Html::default(), V::TITLE, None, views).await;
+                        Ok::<_, (StatusCode, String)>(axum::response::Html(String::from(html)))
+                    };
+                    ([(VARY, VARY_BY)], answer.await)
                 },
             ),
         )

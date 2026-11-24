@@ -17,7 +17,7 @@ use axum::{
     routing::{get, post},
 };
 use htmx_rust::{Html, NoParent, Outlet, View, ViewPath, Views};
-use maud::{DOCTYPE, html};
+use maud::{DOCTYPE, Markup, html};
 use serde::{Deserialize, Serialize};
 
 /// htmx 4, where `pnpm install` puts it.
@@ -109,18 +109,9 @@ impl View for Document {
                     script src="/htmx.js" defer {}
                 }
                 // Set once and inherited by every link and form below: htmx
-                // sends them itself and shows the answer in this view's outlet.
-                //
-                // Until the server cuts the response by the outlet the request
-                // names (ADR 1), every answer is the whole document, so the
-                // browser cuts: `hx-select` and `hx-swap` take the outlet out
-                // of the answer and put it in the place of this one.
-                body
-                    hx-boost:inherited="true"
-                    hx-target:inherited=(target)
-                    hx-select:inherited=(target)
-                    hx-swap:inherited="outerHTML"
-                {
+                // sends them itself, naming this view's outlet, and the answer
+                // is what goes inside it, which htmx puts there.
+                body hx-boost:inherited="true" hx-target:inherited=(target) {
                     nav {
                         a href=(Home.path()) { "Home" }
                         " "
@@ -133,6 +124,14 @@ impl View for Document {
     }
 }
 
+/// The title of an answer that is not the whole document: the view no other
+/// is around says it, for htmx to take it out and make it the document's.
+fn title(outlet: &Outlet) -> Markup {
+    html! {
+        @if outlet.outermost { title { (outlet.title) } }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct Home;
 
@@ -142,12 +141,15 @@ impl View for Home {
     const PATH: &'static str = "/";
     const TITLE: &'static str = "Home";
 
-    async fn render(_: &ViewPath<Self>, _: &App, _: Outlet) -> impl Into<Html> {
+    async fn render(_: &ViewPath<Self>, _: &App, outlet: Outlet) -> impl Into<Html> {
         html! {
+            (title(&outlet))
             h1 { "Home" }
             p { "Every address here shows the same thing on a click and on a refresh." }
             p { a href=(Catalogs::default().path()) { "See the catalogs" } }
-            form method="post" action=(Catalogs::default().path()) {
+            // The answer to this form is drawn by an ordinary route, as the
+            // whole document, so it goes in the whole body.
+            form method="post" action=(Catalogs::default().path()) hx-target="body" {
                 button { "Start a catalog" }
             }
         }
@@ -173,7 +175,7 @@ impl View for Catalogs {
     const PATH: &'static str = "/catalogs";
     const TITLE: &'static str = "Catalogs";
 
-    async fn render(at: &ViewPath<Self>, app: &App, _: Outlet) -> impl Into<Html> {
+    async fn render(at: &ViewPath<Self>, app: &App, outlet: Outlet) -> impl Into<Html> {
         let q = at.q.to_lowercase();
         let store = app.lock().unwrap();
         let found = store
@@ -186,6 +188,7 @@ impl View for Catalogs {
                     .all(|tag| catalog.tags.contains(&tag.as_str()))
             });
         html! {
+            (title(&outlet))
             h1 { "Catalogs" }
             // A GET form is a link whose query string comes from its fields:
             // each is named after a field of the view at its address.
@@ -234,6 +237,7 @@ impl View for Catalog {
     async fn render(at: &ViewPath<Self>, app: &App, outlet: Outlet) -> impl Into<Html> {
         let store = app.lock().unwrap();
         html! {
+            (title(&outlet))
             @match store.catalog(at.catalog_id) {
                 Some(catalog) => {
                     h1 { (catalog.name) }
@@ -252,7 +256,9 @@ impl View for Catalog {
 /// the view at a catalog's address, which is its own: `/catalogs/{catalog_id}`.
 ///
 /// A link to a tab is the path of that tab below the one this view is shown
-/// at, so it is in the catalog the address names.
+/// at, so it is in the catalog the address names. It is aimed at the outlet
+/// this view is shown in, the catalog's: the answer is the tabs again, with
+/// the one that is open marked, and the catalog around them stays as it is.
 #[derive(Serialize, Deserialize)]
 struct Tabs;
 
@@ -265,7 +271,8 @@ impl View for Tabs {
         // The tab that is open is the one whose path is the view in the outlet.
         let (items, tags) = (at.to(Items), at.to(Tags));
         html! {
-            nav {
+            (title(&outlet))
+            nav hx-target:inherited={ "#" (at.parent().outlet()) } {
                 a href=(items) aria-current=[outlet.shows(&items).then_some("page")] { "Items" }
                 " "
                 a href=(tags) aria-current=[outlet.shows(&tags).then_some("page")] { "Tags" }

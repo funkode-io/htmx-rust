@@ -1,10 +1,15 @@
 //! Every test builds a router, sends one request and looks only at the
 //! response's status, headers and body.
 
+use std::sync::{Arc, Mutex};
+
 use axum::{
     Router,
     body::Body,
-    http::{Request, StatusCode, header::CONTENT_TYPE},
+    http::{
+        Request, StatusCode,
+        header::{CONTENT_TYPE, VARY},
+    },
     response::Response,
     routing::get,
 };
@@ -1053,4 +1058,338 @@ impl View for Flattened {
 #[should_panic(expected = "Flattened does not name its fields")]
 fn a_view_with_a_flattened_field_is_an_error_at_startup() {
     let _: Router<App> = Router::new().view::<Flattened>();
+}
+
+/// The state of the views below: the names of those that rendered, in the
+/// order they did, which is how a test knows the ones that did not.
+type Ran = Arc<Mutex<Vec<&'static str>>>;
+
+/// What each of the views below shows: its name around its outlet, and before
+/// it the title, when no view is around it to say it.
+fn draw(ran: &Ran, name: &'static str, shown: String, outlet: Outlet) -> Html {
+    ran.lock().unwrap().push(name);
+    let title = match outlet.outermost {
+        true => format!("<title>{}</title>", outlet.title),
+        false => String::new(),
+    };
+    Html::trusted(format!(
+        "{title}<div id=\"{}\">{shown}[{}]</div>",
+        outlet.id,
+        outlet.content.as_str()
+    ))
+}
+
+/// A root view, and three views nested one in the other below it.
+#[derive(Default, Serialize, Deserialize)]
+struct Outer;
+
+impl View for Outer {
+    type State = Ran;
+    type Parent = NoParent;
+
+    async fn render(_: &ViewPath<Self>, ran: &Ran, outlet: Outlet) -> impl Into<Html> {
+        draw(ran, "Outer", "Outer".into(), outlet)
+    }
+}
+
+/// It names its outlet's id itself.
+#[derive(Serialize, Deserialize)]
+struct Middle {
+    middle: u32,
+}
+
+impl View for Middle {
+    type State = Ran;
+    type Parent = Outer;
+    const PATH: &'static str = "/middles/{middle}";
+    const TITLE: &'static str = "A middle";
+    const OUTLET: Option<&'static str> = Some("middle");
+
+    async fn render(at: &ViewPath<Self>, ran: &Ran, outlet: Outlet) -> impl Into<Html> {
+        draw(ran, "Middle", format!("Middle {}", at.middle), outlet)
+    }
+}
+
+/// It says whether the view nested in it is the one its outlet shows.
+#[derive(Serialize, Deserialize)]
+struct Inner;
+
+impl View for Inner {
+    type State = Ran;
+    type Parent = Middle;
+    const PATH: &'static str = "/inner";
+    const TITLE: &'static str = "An inner";
+
+    async fn render(at: &ViewPath<Self>, ran: &Ran, outlet: Outlet) -> impl Into<Html> {
+        let open = outlet.shows(&at.to(Leaf));
+        draw(ran, "Inner", format!("Inner, leaf open: {open}"), outlet)
+    }
+}
+
+/// It shows a value of the view two above it, and the ids of the outlets it
+/// is shown in, which are those of the views it is nested in.
+#[derive(Serialize, Deserialize)]
+struct Leaf;
+
+impl View for Leaf {
+    type State = Ran;
+    type Parent = Inner;
+    const PATH: &'static str = "/leaf";
+    const TITLE: &'static str = "A leaf";
+
+    async fn render(at: &ViewPath<Self>, ran: &Ran, outlet: Outlet) -> impl Into<Html> {
+        let (inner, middle) = (at.parent(), at.parent().parent());
+        let shown = format!(
+            "Leaf of {} in {} in {}",
+            middle.middle,
+            inner.outlet(),
+            middle.outlet()
+        );
+        draw(ran, "Leaf", shown, outlet)
+    }
+}
+
+const LEAF: &str = "<div id=\"outlet-3\">Leaf of 7 in outlet-2 in middle[]</div>";
+
+/// Sends one GET request for `path` with these `headers`, and gives back the
+/// answer with the names of the views that rendered for it.
+async fn cut(path: &str, headers: &[(&str, &str)]) -> (Response, Vec<&'static str>) {
+    let ran = Ran::default();
+    let router = Router::new()
+        .view::<Middle>()
+        .view::<Inner>()
+        .view::<Leaf>()
+        .with_state(ran.clone());
+    let mut request = Request::get(path);
+    for &(name, value) in headers {
+        request = request.header(name, value);
+    }
+    let response = router
+        .oneshot(request.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let ran = ran.lock().unwrap().clone();
+    (response, ran)
+}
+
+/// What htmx sends with a click on a link whose answer goes in `target`.
+fn click(target: &str) -> [(&str, &str); 2] {
+    [("HX-Request", "true"), ("HX-Target", target)]
+}
+
+/// The whole document for `/middles/7/inner/leaf`, from every view on the way.
+async fn assert_whole_document(headers: &[(&str, &str)]) {
+    let (response, ran) = cut("/middles/7/inner/leaf", headers).await;
+
+    assert_eq!(response.status(), StatusCode::OK, "{headers:?}");
+    assert_eq!(
+        body(response).await,
+        format!(
+            "<title>A leaf</title><div id=\"outlet-0\">Outer[<div id=\"middle\">Middle 7[\
+             <div id=\"outlet-2\">Inner, leaf open: true[{LEAF}]</div>]</div>]</div>"
+        ),
+        "{headers:?}"
+    );
+    assert_eq!(ran, ["Leaf", "Inner", "Middle", "Outer"], "{headers:?}");
+}
+
+#[tokio::test]
+async fn a_request_that_htmx_did_not_send_gets_the_whole_document() {
+    assert_whole_document(&[]).await;
+    // An outlet is named, but not by htmx.
+    assert_whole_document(&[("HX-Target", "div#outlet-0")]).await;
+}
+
+#[tokio::test]
+async fn a_request_naming_the_root_views_outlet_gets_what_is_inside_it_and_the_root_view_does_not_run()
+ {
+    let (response, ran) = cut("/middles/7/inner/leaf", &click("main#outlet-0")).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[CONTENT_TYPE], "text/html; charset=utf-8");
+    // The first view inside the outlet says the title; those in it do not.
+    assert_eq!(
+        body(response).await,
+        format!(
+            "<title>A leaf</title><div id=\"middle\">Middle 7[\
+             <div id=\"outlet-2\">Inner, leaf open: true[{LEAF}]</div>]</div>"
+        )
+    );
+    assert_eq!(ran, ["Leaf", "Inner", "Middle"]);
+}
+
+#[tokio::test]
+async fn a_request_naming_a_nested_views_outlet_gets_only_what_is_inside_it_and_no_view_around_it_runs()
+ {
+    // The outlet whose id its view names, and below it one whose id follows
+    // its view's depth.
+    let (inner, ran_inner) = cut("/middles/7/inner/leaf", &click("section#middle")).await;
+    let (leaf, ran_leaf) = cut("/middles/7/inner/leaf", &click("div#outlet-2")).await;
+
+    assert_eq!(
+        body(inner).await,
+        format!("<title>A leaf</title><div id=\"outlet-2\">Inner, leaf open: true[{LEAF}]</div>")
+    );
+    // The first view of the answer is told what its outlet shows as any other.
+    assert_eq!(ran_inner, ["Leaf", "Inner"]);
+    // The views around the one sent did not run, and it still shows the value
+    // of the one two above it: they are read from the URL all the same.
+    assert_eq!(body(leaf).await, format!("<title>A leaf</title>{LEAF}"));
+    assert_eq!(ran_leaf, ["Leaf"]);
+}
+
+#[tokio::test]
+async fn the_same_outlet_named_for_a_view_higher_up_gets_that_view() {
+    let (response, ran) = cut("/middles/7", &click("main#outlet-0")).await;
+
+    assert_eq!(
+        body(response).await,
+        "<title>A middle</title><div id=\"middle\">Middle 7[]</div>"
+    );
+    assert_eq!(ran, ["Middle"]);
+}
+
+#[tokio::test]
+async fn a_request_naming_an_outlet_that_is_not_on_the_way_gets_the_whole_document() {
+    // An id no view has.
+    assert_whole_document(&click("div#elsewhere")).await;
+    // The outlet of the requested view itself: no view is nested in it here.
+    assert_whole_document(&click("div#outlet-3")).await;
+    // An element with no id, as the body is.
+    assert_whole_document(&click("body")).await;
+    // An id that only starts as an outlet's.
+    assert_whole_document(&click("div#outlet-22")).await;
+}
+
+#[tokio::test]
+async fn a_request_that_restores_history_gets_the_whole_document() {
+    // As htmx 4.0.2 sends it, with no outlet named.
+    assert_whole_document(&[("HX-History-Restore-Request", "true")]).await;
+    // And if it ever names the outlet a click would.
+    let [request, target] = click("main#outlet-0");
+    assert_whole_document(&[request, target, ("HX-History-Restore-Request", "true")]).await;
+}
+
+#[tokio::test]
+async fn every_answer_says_it_varies_by_the_htmx_headers() {
+    let leaf = "/middles/7/inner/leaf";
+    for (path, headers, status) in [
+        (leaf, &[][..], StatusCode::OK),
+        (leaf, &click("main#outlet-0")[..], StatusCode::OK),
+        (leaf, &click("div#elsewhere")[..], StatusCode::OK),
+        (
+            leaf,
+            &[("HX-History-Restore-Request", "true")][..],
+            StatusCode::OK,
+        ),
+        // A URL that no view is read from, whole and cut.
+        ("/middles/seven/inner", &[][..], StatusCode::BAD_REQUEST),
+        (
+            "/middles/seven/inner",
+            &click("section#middle")[..],
+            StatusCode::BAD_REQUEST,
+        ),
+    ] {
+        let (response, _) = cut(path, headers).await;
+
+        assert_eq!(response.status(), status, "{path} {headers:?}");
+        assert_eq!(
+            response.headers()[VARY],
+            "HX-Request, HX-Target, HX-History-Restore-Request",
+            "{path} {headers:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_cut_answer_is_rejected_when_a_view_around_it_cannot_be_read_from_the_url() {
+    // `Middle` would not render, and its parameter still does not parse.
+    let (response, ran) = cut("/middles/seven/inner/leaf", &click("div#outlet-2")).await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(ran.is_empty(), "{ran:?}");
+}
+
+/// A view nested in [`Middle`] that names its outlet as [`Middle`] does.
+#[derive(Serialize, Deserialize)]
+struct AlsoMiddle;
+
+impl View for AlsoMiddle {
+    type State = Ran;
+    type Parent = Middle;
+    const PATH: &'static str = "/also";
+    const OUTLET: Option<&'static str> = Some("middle");
+
+    async fn render(_: &ViewPath<Self>, _: &Ran, _: Outlet) -> impl Into<Html> {
+        Html::default()
+    }
+}
+
+/// A view nested in [`AlsoMiddle`], and sound itself.
+#[derive(Serialize, Deserialize)]
+struct InAlsoMiddle;
+
+impl View for InAlsoMiddle {
+    type State = Ran;
+    type Parent = AlsoMiddle;
+    const PATH: &'static str = "/inside";
+
+    async fn render(_: &ViewPath<Self>, _: &Ran, _: Outlet) -> impl Into<Html> {
+        Html::default()
+    }
+}
+
+/// A view nested in [`Middle`] that names its outlet with the id the root
+/// view's has by default.
+#[derive(Serialize, Deserialize)]
+struct AsTheRootViews;
+
+impl View for AsTheRootViews {
+    type State = Ran;
+    type Parent = Middle;
+    const PATH: &'static str = "/root";
+    const OUTLET: Option<&'static str> = Some("outlet-0");
+
+    async fn render(_: &ViewPath<Self>, _: &Ran, _: Outlet) -> impl Into<Html> {
+        Html::default()
+    }
+}
+
+/// A view whose outlet's id htmx would not send as it is written.
+#[derive(Serialize, Deserialize)]
+struct Spaced;
+
+impl View for Spaced {
+    type State = Ran;
+    type Parent = Outer;
+    const PATH: &'static str = "/spaced";
+    const OUTLET: Option<&'static str> = Some("the outlet");
+
+    async fn render(_: &ViewPath<Self>, _: &Ran, _: Outlet) -> impl Into<Html> {
+        Html::default()
+    }
+}
+
+#[test]
+#[should_panic(expected = "AlsoMiddle is shown through two outlets with the id middle")]
+fn an_outlet_with_the_id_of_an_ancestors_is_an_error_at_startup() {
+    let _: Router<Ran> = Router::new().view::<AlsoMiddle>();
+}
+
+#[test]
+#[should_panic(expected = "InAlsoMiddle is shown through two outlets with the id middle")]
+fn two_ancestors_whose_outlets_share_an_id_are_an_error_at_startup() {
+    let _: Router<Ran> = Router::new().view::<InAlsoMiddle>();
+}
+
+#[test]
+#[should_panic(expected = "AsTheRootViews is shown through two outlets with the id outlet-0")]
+fn an_outlet_named_as_an_ancestors_default_id_is_an_error_at_startup() {
+    let _: Router<Ran> = Router::new().view::<AsTheRootViews>();
+}
+
+#[test]
+#[should_panic(expected = "Spaced is shown through an outlet with the id \"the outlet\"")]
+fn an_outlet_whose_id_is_not_letters_digits_hyphens_and_underscores_is_an_error_at_startup() {
+    let _: Router<Ran> = Router::new().view::<Spaced>();
 }
