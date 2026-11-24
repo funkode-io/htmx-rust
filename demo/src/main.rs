@@ -293,10 +293,11 @@ impl View for Tags {
     const PATH: &'static str = "/tags";
     const TITLE: &'static str = "Tags";
 
-    async fn render(at: &ViewPath<Self>, app: &App, _: Outlet) -> impl Into<Html> {
+    async fn render(at: &ViewPath<Self>, app: &App, outlet: Outlet) -> impl Into<Html> {
         let store = app.lock().unwrap();
         let catalog = store.catalog(at.parent().parent().catalog_id);
         html! {
+            (title(&outlet))
             h2 { "Tags" }
             ul {
                 @for tag in catalog.into_iter().flat_map(|catalog| &catalog.tags) {
@@ -323,6 +324,7 @@ impl View for Items {
         let store = app.lock().unwrap();
         let catalog = store.catalog(at.parent().parent().catalog_id);
         html! {
+            (title(&outlet))
             h2 { "Items" }
             ul {
                 @for &item in catalog.into_iter().flat_map(|catalog| &catalog.items) {
@@ -352,12 +354,13 @@ impl View for Item {
     const PATH: &'static str = "/{item}";
     const TITLE: &'static str = "Item";
 
-    async fn render(at: &ViewPath<Self>, app: &App, _: Outlet) -> impl Into<Html> {
+    async fn render(at: &ViewPath<Self>, app: &App, outlet: Outlet) -> impl Into<Html> {
         let store = app.lock().unwrap();
         let catalog = store
             .catalog(at.parent().parent().parent().catalog_id)
             .filter(|catalog| catalog.items.contains(&at.item.as_str()));
         html! {
+            (title(&outlet))
             @match catalog {
                 Some(catalog) => {
                     h3 { (at.item) }

@@ -1370,6 +1370,27 @@ impl View for Spaced {
     }
 }
 
+/// A view whose outlet's id cannot follow a `#` as the element a link is aimed at.
+#[derive(Serialize, Deserialize)]
+struct Numbered;
+
+impl View for Numbered {
+    type State = Ran;
+    type Parent = Outer;
+    const PATH: &'static str = "/numbered";
+    const OUTLET: Option<&'static str> = Some("1st");
+
+    async fn render(_: &ViewPath<Self>, _: &Ran, _: Outlet) -> impl Into<Html> {
+        Html::default()
+    }
+}
+
+#[test]
+#[should_panic(expected = "Numbered is shown through an outlet with the id \"1st\"")]
+fn an_outlet_whose_id_starts_with_a_digit_is_an_error_at_startup() {
+    let _: Router<Ran> = Router::new().view::<Numbered>();
+}
+
 #[test]
 #[should_panic(expected = "AlsoMiddle is shown through two outlets with the id middle")]
 fn an_outlet_with_the_id_of_an_ancestors_is_an_error_at_startup() {

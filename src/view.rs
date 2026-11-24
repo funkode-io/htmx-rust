@@ -448,6 +448,11 @@ pub trait Views<S> {
     /// any other element, or that restores history (back and forward), is
     /// answered with the whole document.
     ///
+    /// So a view's rendering does not guard the views nested in it: a request
+    /// can ask for them without it. What must hold for every view below, such
+    /// as who may see a resource, belongs in an axum layer or in each view's
+    /// own loading.
+    ///
     /// Every answer says which request headers it depends on (`Vary`).
     ///
     /// The view and its ancestors are read from the request's URL first,
@@ -460,7 +465,8 @@ pub trait Views<S> {
     /// If the path already answers GET requests, or the view or one of its
     /// ancestors has a parameter in its part of the path that none of its
     /// fields fills, a field named as one of an ancestor's, or an outlet whose
-    /// id is an ancestor's or is not made of letters, digits, `-` and `_`.
+    /// id is an ancestor's, or does not start with a letter or `_`, or is not
+    /// made of letters, digits, `-` and `_`.
     fn view<V: View<State = S>>(self) -> Self;
 }
 
@@ -471,12 +477,14 @@ impl<S: Clone + Send + Sync + 'static> Views<S> for Router<S> {
         let outlets = V::outlets();
         for (depth, id) in outlets.iter().enumerate() {
             assert!(
-                !id.is_empty()
+                id.bytes()
+                    .next()
+                    .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
                     && id
                         .bytes()
                         .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte)),
-                "{view} is shown through an outlet with the id {id:?}: an id is made of letters, \
-                 digits, - and _"
+                "{view} is shown through an outlet with the id {id:?}: an id starts with a letter \
+                 or _ and is made of letters, digits, - and _"
             );
             assert!(
                 !outlets[..depth].contains(id),

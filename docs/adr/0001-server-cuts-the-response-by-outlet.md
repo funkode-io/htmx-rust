@@ -19,7 +19,8 @@ The rule, for a request to a view's URL:
 ## Consequences
 
 - By default a link fills the root view's outlet. A view that draws its own navigation may name a narrower outlet on it: its own, or the one it is shown in.
-- An outlet needs an id, or the server cannot tell which one was named. The id is compared as htmx sends it, so it is made of letters, digits, `-` and `_`, and no two outlets on the way to a view share one; both are checked when a view is registered.
+- An outlet needs an id, or the server cannot tell which one was named. The id is compared as htmx sends it, and written after a `#` as the element a link is aimed at, so it starts with a letter or `_`, is made of letters, digits, `-` and `_`, and no two outlets on the way to a view share one; both are checked when a view is registered.
+- A view's rendering does not guard the views nested in it, because a request can name its outlet and never run it. A check that must hold for everything below a view is an axum layer's, or each view's own ([ADR 2](0002-views-are-self-sufficient-types-that-name-their-parent.md)).
 - What is sent for an outlet is exactly the representation of the views inside it, so a nested view answers a tab click with its own content, navigation included, and nothing of its ancestors.
 - The one difference is the title, which the root view puts in the document's head and which a cut answer has no head for. The view that no other is around in an answer is told so, and says the title in a `<title>`: htmx takes it out of the answer and makes it the document's. The library writes no markup for it ([ADR 3](0003-the-core-emits-no-markup.md)).
 - A request that restores history (back and forward) gets the whole document whatever else it carries. htmx 4.0.2 sends it with `HX-History-Restore-Request` alone, neither `HX-Request` nor `HX-Target`, which looks like an accident of its code; the rule does not rely on it, and so `Vary` names that header too.
