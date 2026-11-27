@@ -151,9 +151,11 @@ impl<V: View> ViewPath<V> {
 }
 
 /// The id of a view's outlet: the names of the views from the root view down to
-/// it, as their types spell them, so no two outlets share one. A root view
-/// `Document` has `document-outlet`, a `Catalog` nested in it
-/// `document-catalog-outlet`.
+/// it, as their types spell them. A root view `Document` has `document-outlet`,
+/// a `Catalog` nested in it `document-catalog-outlet`, and a `CatalogItem`
+/// nested in the root view `document-catalog_item-outlet`: a `_` joins the
+/// words of one name and a `-` joins the views, so the outlets of one document
+/// never share an id.
 fn outlet<V: View>() -> String {
     format!("{}-outlet", V::name())
 }
@@ -258,7 +260,8 @@ mod chain {
         fn route() -> String;
 
         /// The names of the views from the root view down to this one, as an
-        /// id spells them: `document-catalog-items`.
+        /// id spells them: a `-` between views and a `_` between the words of
+        /// one view's name, `document-catalog_item`.
         fn name() -> String;
 
         /// Checks this view and its ancestors, whose fields' names are `seen`.
@@ -304,6 +307,22 @@ mod chain {
         }
     }
 
+    fn name_without_module_or_generics<V>() -> &'static str {
+        let without_generics = type_name::<V>().split('<').next().unwrap_or_default();
+        without_generics.rsplit("::").next().unwrap_or_default()
+    }
+
+    fn snake_case(camel_case: &str) -> String {
+        let mut snake_case = String::new();
+        for (index, letter) in camel_case.char_indices() {
+            if letter.is_uppercase() && index > 0 {
+                snake_case.push('_');
+            }
+            snake_case.extend(letter.to_lowercase());
+        }
+        snake_case
+    }
+
     impl<V: View> Chain<V::State> for V {
         const DEPTH: usize = V::Parent::DEPTH + 1;
         type ViewPath = ViewPath<V>;
@@ -319,14 +338,7 @@ mod chain {
             if !name.is_empty() {
                 name.push('-');
             }
-            // `app::CatalogItem<Parent>` is spelled `catalog-item`.
-            let own = type_name::<V>().split('<').next().unwrap_or_default();
-            for (index, letter) in own.rsplit("::").next().unwrap_or_default().char_indices() {
-                if letter.is_uppercase() && index > 0 {
-                    name.push('-');
-                }
-                name.extend(letter.to_lowercase());
-            }
+            name.push_str(&snake_case(name_without_module_or_generics::<V>()));
             name
         }
 

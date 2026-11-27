@@ -119,7 +119,7 @@ assert_eq!(item.to_string(), "/catalogs/7/items/3");
 
 A view derives serde's `Serialize` and `Deserialize`: that is how its fields are read from a URL and printed back. A URL that does not parse into the fields, such as `/catalogs/seven`, is answered with `400 Bad Request` and no view runs.
 
-Nesting is declared, never read from the path: `/catalogs/7` extends `/catalogs`, and is still shown beside it in the root view's outlet, because `Catalog` names `Document` as its parent. An outlet's id is made of the names of the views down to it (`document-outlet`, `document-catalog-outlet`, …), so no two outlets share one.
+Nesting is declared, never read from the path: `/catalogs/7` extends `/catalogs`, and is still shown beside it in the root view's outlet, because `Catalog` names `Document` as its parent. An outlet's id is made of the names of the views down to it (`document-outlet`, `document-catalog-outlet`, …): a `-` joins the views and a `_` joins the words of one view's name, so no two outlets of a document share one.
 
 A URL is never written by hand. It is a `ViewPath`: a view value and, above it, the path of its parent. What the compiler refuses:
 

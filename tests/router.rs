@@ -95,8 +95,7 @@ impl View for Entry {
 }
 
 /// One catalog, nested in the root view beside [`Catalogs`], although its path
-/// extends that one's. It names its outlet's id itself, and besides its
-/// parameter it has a field in the query string.
+/// extends that one's. Besides its parameter it has a field in the query string.
 #[derive(Serialize, Deserialize)]
 struct Catalog {
     catalog: u32,
@@ -581,6 +580,48 @@ fn outlets(html: &str) -> Vec<&str> {
     ids.map(|rest| rest.split_once('"').unwrap().0).collect()
 }
 
+#[derive(Serialize, Deserialize)]
+struct Item;
+
+impl View for Item {
+    type State = App;
+    type Parent = Catalog;
+    const PATH: &'static str = "/item";
+
+    async fn render(_: &ViewPath<Self>, _: &App, _: Outlet) -> impl Into<Html> {
+        Html::trusted("")
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct CatalogItem;
+
+impl View for CatalogItem {
+    type State = App;
+    type Parent = Document;
+    const PATH: &'static str = "/catalog-item";
+
+    async fn render(_: &ViewPath<Self>, _: &App, _: Outlet) -> impl Into<Html> {
+        Html::trusted("")
+    }
+}
+
+#[test]
+fn a_view_named_with_two_words_and_two_nested_views_named_with_one_each_have_different_outlet_ids()
+{
+    let item_in_catalog = Catalog {
+        catalog: 7,
+        page: None,
+    }
+    .path()
+    .to(Item)
+    .outlet();
+    let catalog_item = CatalogItem.path().outlet();
+
+    assert_eq!(item_in_catalog, "document-catalog-item-outlet");
+    assert_eq!(catalog_item, "document-catalog_item-outlet");
+}
+
 #[tokio::test]
 async fn an_outlets_id_is_the_names_of_the_views_down_to_it() {
     let catalogs = body(get_path(router(), "/catalogs/archived").await).await;
@@ -866,7 +907,7 @@ mod with_maud {
 
         assert_eq!(
             body(response).await,
-            "<title>Home</title><main id=\"maud-document-outlet\"><h1>Welcome to &lt;Loom&gt;</h1>\
+            "<title>Home</title><main id=\"maud_document-outlet\"><h1>Welcome to &lt;Loom&gt;</h1>\
              <a href=\"/search?q=a%26b\">Search</a></main>"
         );
     }
