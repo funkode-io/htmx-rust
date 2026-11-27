@@ -36,8 +36,13 @@ pub fn parse<T: DeserializeOwned>(fields: &str) -> Result<T, Error> {
 /// # Panics
 ///
 /// If a parameter has no field of that name, a field's name was `seen`, or `T`
-/// does not name its fields: it is not a struct, or has a flattened field.
-pub fn check<T: DeserializeOwned>(part: &str, seen: &mut Vec<(&'static str, &'static str)>) {
+/// does not name its fields: it is not a struct, or has a flattened field. The
+/// panic stops the app from starting; this is not called while a request is
+/// served.
+pub fn check_at_startup<T: DeserializeOwned>(
+    part: &str,
+    seen: &mut Vec<(&'static str, &'static str)>,
+) {
     /// Takes the names of the fields a type asks for, and nothing else.
     struct Names<'a>(&'a mut Option<&'static [&'static str]>);
 
@@ -76,6 +81,9 @@ pub fn check<T: DeserializeOwned>(part: &str, seen: &mut Vec<(&'static str, &'st
     let view = type_name::<T>();
     let mut names = None;
     let _ = T::deserialize(Names(&mut names));
+    // Stops the app from starting when a view is not a struct with named
+    // fields. Runs only when a view is registered, never while a request is
+    // served.
     let Some(names) = names else {
         panic!(
             "{view} does not name its fields: a view is a struct with named fields, or none, \
@@ -84,6 +92,9 @@ pub fn check<T: DeserializeOwned>(part: &str, seen: &mut Vec<(&'static str, &'st
     };
     let parameters = part.split('{').skip(1);
     for parameter in parameters.filter_map(|rest| Some(rest.split_once('}')?.0)) {
+        // Stops the app from starting when a parameter of the path has no
+        // field to fill it. Runs only when a view is registered, never while a
+        // request is served.
         assert!(
             names.contains(&parameter),
             "{view} has no field for the parameter {{{parameter}}} of its part of the path: {part}"
@@ -91,6 +102,9 @@ pub fn check<T: DeserializeOwned>(part: &str, seen: &mut Vec<(&'static str, &'st
     }
     for &name in names {
         if let Some((_, ancestor)) = seen.iter().find(|(seen, _)| *seen == name) {
+            // Stops the app from starting when a view and one it is nested in
+            // have a field of the same name. Runs only when a view is
+            // registered, never while a request is served.
             panic!(
                 "{view} and {ancestor}, which it is nested in, both have a field named \
                  {name}: a name is used once on the way down"

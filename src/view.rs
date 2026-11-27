@@ -265,7 +265,7 @@ mod chain {
         fn name() -> String;
 
         /// Checks this view and its ancestors, whose fields' names are `seen`.
-        fn check(seen: &mut Vec<(&'static str, &'static str)>);
+        fn check_at_startup(seen: &mut Vec<(&'static str, &'static str)>);
 
         /// Reads this view and its ancestors from what a URL carries.
         fn parse(fields: &str) -> Result<Self::ViewPath, url::Error>;
@@ -294,7 +294,7 @@ mod chain {
             String::new()
         }
 
-        fn check(_: &mut Vec<(&'static str, &'static str)>) {}
+        fn check_at_startup(_: &mut Vec<(&'static str, &'static str)>) {}
 
         fn parse(_: &str) -> Result<NoParent, url::Error> {
             Ok(NoParent)
@@ -342,15 +342,18 @@ mod chain {
             name
         }
 
-        fn check(seen: &mut Vec<(&'static str, &'static str)>) {
+        fn check_at_startup(seen: &mut Vec<(&'static str, &'static str)>) {
+            // Stops the app from starting when a nested view adds no part to
+            // the path. Runs only when a view is registered, never while a
+            // request is served.
             assert!(
                 V::Parent::DEPTH == 0 || !V::PATH.is_empty(),
                 "{} has no part of the path: a view nested in another adds its own part, \
                  so that its address is its own",
                 type_name::<V>()
             );
-            V::Parent::check(seen);
-            url::check::<V>(V::PATH, seen);
+            V::Parent::check_at_startup(seen);
+            url::check_at_startup::<V>(V::PATH, seen);
         }
 
         fn parse(fields: &str) -> Result<ViewPath<V>, url::Error> {
@@ -414,7 +417,7 @@ pub trait Views<S> {
 
 impl<S: Clone + Send + Sync + 'static> Views<S> for Router<S> {
     fn view<V: View<State = S>>(self) -> Self {
-        V::check(&mut Vec::new());
+        V::check_at_startup(&mut Vec::new());
         self.route(
             &V::route(),
             get(
