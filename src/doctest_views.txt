@@ -1,0 +1,46 @@
+# use htmx_rust::{Html, NoParent, Outlet, ViewPath, View};
+# use serde::{Deserialize, Serialize};
+#
+# #[derive(Default, Serialize, Deserialize)]
+# struct Document;
+#
+# impl View for Document {
+#     type State = ();
+#     type Parent = NoParent;
+#
+#     async fn render(_: &ViewPath<Self>, _: &(), _: Outlet) -> impl Into<Html> {
+#         Html::default()
+#     }
+# }
+#
+# #[derive(Serialize, Deserialize)]
+# struct Catalog {
+#     catalog_id: u32,
+#     page: Option<u32>,
+# }
+#
+# impl View for Catalog {
+#     type State = ();
+#     type Parent = Document;
+#     const PATH: &'static str = "/catalogs/{catalog_id}";
+#
+#     async fn render(_: &ViewPath<Self>, _: &(), _: Outlet) -> impl Into<Html> {
+#         Html::default()
+#     }
+# }
+#
+# #[derive(Serialize, Deserialize)]
+# struct Item {
+#     item_id: u32,
+# }
+#
+# impl View for Item {
+#     type State = ();
+#     type Parent = Catalog;
+#     const PATH: &'static str = "/items/{item_id}";
+#
+#     async fn render(_: &ViewPath<Self>, _: &(), _: Outlet) -> impl Into<Html> {
+#         Html::default()
+#     }
+# }
+#

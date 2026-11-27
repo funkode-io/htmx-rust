@@ -11,4 +11,4 @@ mod url;
 mod view;
 
 pub use html::Html;
-pub use view::{NoParent, Outlet, Parent, View, Views};
+pub use view::{NoParent, Outlet, Parent, View, ViewPath, Views};
